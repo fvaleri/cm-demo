@@ -1,56 +1,56 @@
-#
-#                       CLUSTER MIRRORING TEST INFRASTRUCTURE
-#                       =====================================
-#
-#    SOURCE CLUSTER (Kafka 3.9.2, ZK mode)       DESTINATION CLUSTER (local build, KRaft)
-#    Downloaded binary, AclAuthorizer             StandardAuthorizer
-#    SSL: JKS keystore/truststore                 SSL: PEM via DirectoryConfigProvider
-#    +--------------------------------------+     +--------------------------------------+
-#    |                                      |     |                                      |
-#    |  +------------+                      |     |  +------------+                      |
-#    |  | ZooKeeper  |  PLAINTEXT           |     |  | Controller |  SASL_SSL (PLAIN)    |
-#    |  | server0    |  :2181               |     |  | server3    |  :6003               |
-#    |  +------+-----+                      |     |  +------+-----+                      |
-#    |         |                            |     |         |                            |
-#    |   +-----+------+                     |     |   +-----+------+                     |
-#    |   |            |                     |     |   |            |                     |
-#    |  +v--------+  +v--------+            |     |  +v--------+  +v--------+            |
-#    |  | Broker  |  | Broker  |            |     |  | Broker  |  | Broker  |            |
-#    |  | server1 |  | server2 |            |     |  | server4 |  | server5 |            |
-#    |  | :9091   |  | :9092   |            |     |  | :9094   |  | :9095   |            |
-#    |  +---------+  +---------+            |     |  +---------+  +---------+            |
-#    |   REPLICATION: SASL_SSL (PLAIN)      |     |   REPLICATION: SASL_SSL (PLAIN)      |
-#    |   CLIENT:     SASL_SSL (PLAIN)       |     |   BROKER:     SASL_SSL (PLAIN)       |
-#    |                                      |     |                                      |
-#    +------------------+-------------------+     +---+------------------+--------------+
-#                       |                             |                  |
-#                       |   MIRROR CONNECTIONS        |                  |
-#                       |<----------------------------+                  |
-#                       |  mirror.properties                             |
-#                       |  SASL_SSL (PLAIN), JKS truststore              |
-#                       |  User: kafka (super)                           |
-#                       |                                                |
-#                       |  my-mirror:                                    |
-#                       |    my-topic-a (3 partitions)                   |
-#                       |    my-topic-b (5 partitions)                   |
-#                       |  new-mirror:                                   |
-#                       |    new-topic-a (2 partitions)                  |
-#                       |                                                |
-#          +------------+------------+                  +----------------+---+
-#          |                         |                  |                    |
-#     +----v----+             +------v------+      +----v----+       +------v------+
-#     | client  | SASL_SSL    |   kafka     |      | client  |       |   kafka     |
-#     | (User:  | PLAIN       |   (User:    |      | (User:  |       |   (User:    |
-#     | client) | JKS trust   |   kafka)    |      | client) |       |   kafka)    |
-#     +---------+             +-------------+      +---------+       +-------------+
-#     produce/consume          admin commands       (via ACL sync)    admin commands
-#     with ACLs                topic, mirror,                         verify configs,
-#                              ACLs, configs                          offsets, ACLs
-#
-#    SHARED CERTIFICATE: self-signed PEM (localhost)
-#    Converted to JKS for source cluster compatibility
-#    Same cert used by all nodes and clients
-#
+
+                       CLUSTER MIRRORING TEST INFRASTRUCTURE
+                       =====================================
+
+    SOURCE CLUSTER (Kafka 3.9.2, ZK mode)        DESTINATION CLUSTER (local, KRaft mode)
+    Downloaded binary, AclAuthorizer             StandardAuthorizer
+    SSL: JKS keystore/truststore                 SSL: PEM via DirectoryConfigProvider
+    +--------------------------------------+     +--------------------------------------+
+    |                                      |     |                                      |
+    |  +------------+                      |     |  +------------+                      |
+    |  | ZooKeeper  |  PLAINTEXT           |     |  | Controller |  SASL_SSL (PLAIN)    |
+    |  | server0    |  :2181               |     |  | server3    |  :6003               |
+    |  +------+-----+                      |     |  +------+-----+                      |
+    |         |                            |     |         |                            |
+    |   +-----+------+                     |     |   +-----+------+                     |
+    |   |            |                     |     |   |            |                     |
+    |  +v--------+  +v--------+            |     |  +v--------+  +v--------+            |
+    |  | Broker  |  | Broker  |            |     |  | Broker  |  | Broker  |            |
+    |  | server1 |  | server2 |            |     |  | server4 |  | server5 |            |
+    |  | :9091   |  | :9092   |            |     |  | :9094   |  | :9095   |            |
+    |  +---------+  +---------+            |     |  +---------+  +---------+            |
+    |   REPLICATION: SASL_SSL (PLAIN)      |     |   REPLICATION: SASL_SSL (PLAIN)      |
+    |   BROKER:     SASL_SSL (PLAIN)       |     |   BROKER:     SASL_SSL (PLAIN)       |
+    |                                      |     |                                      |
+    +------------------+-------------------+     +---+------------------+--------------+
+                       |                             |                  |
+                       |   MIRROR CONNECTIONS        |                  |
+                       |<----------------------------+                  |
+                       |  mirror.properties                             |
+                       |  SASL_SSL (PLAIN), JKS truststore              |
+                       |  User: kafka (super)                           |
+                       |                                                |
+                       |  my-mirror:                                    |
+                       |    my-topic-a (3 partitions)                   |
+                       |    my-topic-b (5 partitions)                   |
+                       |  new-mirror:                                   |
+                       |    new-topic-a (2 partitions)                  |
+                       |                                                |
+          +------------+------------+                  +----------------+---+
+          |                         |                  |                    |
+     +----v----+             +------v------+      +----v----+       +------v------+
+     | client  | SASL_SSL    |   kafka     |      | client  |       |   kafka     |
+     | (User:  | PLAIN       |   (User:    |      | (User:  |       |   (User:    |
+     | client) | JKS trust   |   kafka)    |      | client) |       |   kafka)    |
+     +---------+             +-------------+      +---------+       +-------------+
+     produce/consume          admin commands       (via ACL sync)    admin commands
+     with ACLs                topic, mirror,                         verify configs,
+                              ACLs, configs                          offsets, ACLs
+
+    SHARED CERTIFICATE: self-signed PEM (localhost)
+    Converted to JKS for source cluster compatibility
+    Same cert used by all nodes and clients
+
 
 TEST_DIR="$(pwd)/build/test"
 declare -A server0=([id]="0" [rep]="2181" [jmx]="7000" [fol]="5000" [oth]="6000")
@@ -239,9 +239,9 @@ start-broker-zk() {
   echo "zookeeper.connection.timeout.ms=18000" >> "$TEST_DIR"/server"${ref[id]}"/config/server.properties
 
   # listeners
-  echo "listeners=REPLICATION://localhost:${ref[rep]},CLIENT://localhost:${ref[cli]}" >> "$TEST_DIR"/server"${ref[id]}"/config/server.properties
-  echo "advertised.listeners=REPLICATION://localhost:${ref[rep]},CLIENT://localhost:${ref[cli]}" >> "$TEST_DIR"/server"${ref[id]}"/config/server.properties
-  echo "listener.security.protocol.map=REPLICATION:SASL_SSL,CLIENT:SASL_SSL" >> "$TEST_DIR"/server"${ref[id]}"/config/server.properties
+  echo "listeners=REPLICATION://localhost:${ref[rep]},BROKER://localhost:${ref[cli]}" >> "$TEST_DIR"/server"${ref[id]}"/config/server.properties
+  echo "advertised.listeners=REPLICATION://localhost:${ref[rep]},BROKER://localhost:${ref[cli]}" >> "$TEST_DIR"/server"${ref[id]}"/config/server.properties
+  echo "listener.security.protocol.map=REPLICATION:SASL_SSL,BROKER:SASL_SSL" >> "$TEST_DIR"/server"${ref[id]}"/config/server.properties
   echo "inter.broker.listener.name=REPLICATION" >> "$TEST_DIR"/server"${ref[id]}"/config/server.properties
 
   # defaults used for auto created topics
@@ -257,7 +257,7 @@ start-broker-zk() {
 
   echo "sasl.enabled.mechanisms=PLAIN" >> "$TEST_DIR"/server"${ref[id]}"/config/server.properties
   echo "sasl.mechanism.inter.broker.protocol=PLAIN" >> "$TEST_DIR"/server"${ref[id]}"/config/server.properties
-  echo 'listener.name.client.plain.sasl.jaas.config=org.apache.kafka.common.security.plain.PlainLoginModule required \
+  echo 'listener.name.broker.plain.sasl.jaas.config=org.apache.kafka.common.security.plain.PlainLoginModule required \
     username="kafka" password="changeit" user_kafka="changeit" user_client="changeit";' >> "$TEST_DIR"/server"${ref[id]}"/config/server.properties
   echo 'listener.name.replication.plain.sasl.jaas.config=org.apache.kafka.common.security.plain.PlainLoginModule required \
     username="kafka" password="changeit" user_kafka="changeit" user_client="changeit";' >> "$TEST_DIR"/server"${ref[id]}"/config/server.properties
@@ -538,7 +538,7 @@ bin/kafka-cluster-mirrors.sh --bootstrap-server "$DST_BOOTSTRAP" --start --topic
 wait-for-state "$DST_BOOTSTRAP" "MIRRORING" ".*" "$TEST_DIR"/kafka.properties
 bin/kafka-cluster-mirrors.sh --bootstrap-server "$DST_BOOTSTRAP" --describe --command-config "$TEST_DIR"/kafka.properties
 
-# Kill producers and consumers to create some lag
+# Kill producers and consumers (this will create some consumer lag)
 pkill -SIGKILL -ef "ConsoleProducer" ||true
 pkill -SIGKILL -ef "ConsoleConsumer" ||true
 wait-for-lag-zero "$DST_BOOTSTRAP" ".*" "$TEST_DIR"/kafka.properties
@@ -586,7 +586,6 @@ wait-for-sync "$DST_BOOTSTRAP" "$TEST_DIR"/kafka.properties
 bin/kafka-cluster-mirrors.sh --bootstrap-server "$DST_BOOTSTRAP" --describe --command-config "$TEST_DIR"/kafka.properties
 
 # Drain all remaining records from destination with my-group
-# each partition has one extra pid reset control record that inflates the lag by 1
 timeout -s INT 30 bin/kafka-console-consumer.sh --bootstrap-server "$DST_BOOTSTRAP" --group my-group --include ".*" \
   --consumer-property group.protocol=consumer --consumer.config "$TEST_DIR"/client.properties | tail -n1
 bin/kafka-consumer-groups.sh --bootstrap-server "$DST_BOOTSTRAP" --group my-group \
