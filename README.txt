@@ -485,7 +485,7 @@ test-setup() {
 
   echo "Starting dashboard on http://127.0.0.1:8099"
   "$DASH_HOME"/update.py --kafka-home "$(pwd)" --bootstrap-server "$DST_BOOTSTRAP" \
-    --command-config "$TEST_DIR"/kafka.properties &
+    --command-config "$TEST_DIR"/kafka.properties > /tmp/update.log 2>&1 &
 
   echo "Creating topics with custom configs on source"
   "$SRC_HOME"/bin/kafka-topics.sh --bootstrap-server "$SRC_BOOTSTRAP" --create --topic my-topic-a \
