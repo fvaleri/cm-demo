@@ -352,7 +352,7 @@ start-broker() {
   echo "controller.quorum.bootstrap.servers=$boot" >> "$TEST_DIR"/server"${ref[id]}"/config/server.properties
   echo "auto.create.topics.enable=false" >> "$TEST_DIR"/server"${ref[id]}"/config/server.properties
   echo "mirror.metadata.refresh.interval.ms=10000" >> "$TEST_DIR"/server"${ref[id]}"/config/server.properties
-  echo "mirror.num.replica.fetchers=5" >> "$TEST_DIR"/server"${ref[id]}"/config/server.properties
+  echo "mirror.num.replica.fetchers=2" >> "$TEST_DIR"/server"${ref[id]}"/config/server.properties
 
   # listeners
   echo "listeners=REPLICATION://localhost:${ref[rep]},BROKER://localhost:${ref[cli]}" >> "$TEST_DIR"/server"${ref[id]}"/config/server.properties
@@ -509,33 +509,13 @@ test-setup() {
 
 test-setup
 
-echo "Comparing topic configs"
-for topic in my-topic-a my-topic-b new-topic-a; do
-  echo "**** $topic ****"
-  echo "---- source ----"
-  "$SRC_HOME"/bin/kafka-configs.sh --bootstrap-server "$SRC_BOOTSTRAP" --entity-type topics --entity-name "$topic" \
-    --describe --command-config "$TEST_DIR"/kafka.properties
-  echo "---- destination ----"
-  bin/kafka-configs.sh --bootstrap-server "$DST_BOOTSTRAP" --entity-type topics --entity-name "$topic" \
-    --describe --command-config "$TEST_DIR"/kafka.properties
-done
-
-echo "Comparing consumer group offsets"
-# Rows ordering may be different because older versions lacks the topic+partition sorting
+# List topics
 echo "---- source ----"
-"$SRC_HOME"/bin/kafka-consumer-groups.sh --bootstrap-server "$SRC_BOOTSTRAP" --group my-group \
-  --describe --command-config "$TEST_DIR"/kafka.properties
+"$SRC_HOME"/bin/kafka-topics.sh --bootstrap-server "$SRC_BOOTSTRAP" --list --command-config "$TEST_DIR"/kafka.properties
 echo "---- destination ----"
-bin/kafka-consumer-groups.sh --bootstrap-server "$DST_BOOTSTRAP" --group my-group \
-  --describe --command-config "$TEST_DIR"/kafka.properties
+bin/kafka-topics.sh --bootstrap-server "$DST_BOOTSTRAP" --list --command-config "$TEST_DIR"/kafka.properties
 
-echo "Comparing ACLs"
-echo "---- source ----"
-"$SRC_HOME"/bin/kafka-acls.sh --bootstrap-server "$SRC_BOOTSTRAP" --list --command-config "$TEST_DIR"/kafka.properties
-echo "---- destination ----"
-bin/kafka-acls.sh --bootstrap-server "$DST_BOOTSTRAP" --list --command-config "$TEST_DIR"/kafka.properties
-
-echo "Starting 3 producers and a group with 2 consumers on source"
+# Start 3 producers and a group with 2 consumers on source
 for topic in my-topic-a my-topic-b new-topic-a; do
   (i=0; while true; do echo "$((i++)):msg$i"; sleep 0.001; done) \
     | "$SRC_HOME"/bin/kafka-console-producer.sh --bootstrap-server "$SRC_BOOTSTRAP" --topic "$topic" \
@@ -546,7 +526,7 @@ done
 "$SRC_HOME"/bin/kafka-console-consumer.sh --bootstrap-server "$SRC_BOOTSTRAP" --include "new-topic-.*" \
   --group my-group --from-beginning --consumer.config "$TEST_DIR"/client.properties >/dev/null &
 
-echo "Creating 2 mirrors"
+# Create 2 mirrors
 bin/kafka-cluster-mirrors.sh --bootstrap-server "$DST_BOOTSTRAP" --create --mirror my-mirror \
   --mirror-config "$TEST_DIR"/mirror.properties --command-config "$TEST_DIR"/kafka.properties
 bin/kafka-cluster-mirrors.sh --bootstrap-server "$DST_BOOTSTRAP" --start --topics "my-topic-.*" \
@@ -558,13 +538,13 @@ bin/kafka-cluster-mirrors.sh --bootstrap-server "$DST_BOOTSTRAP" --start --topic
 wait-for-state "$DST_BOOTSTRAP" "MIRRORING" ".*" "$TEST_DIR"/kafka.properties
 bin/kafka-cluster-mirrors.sh --bootstrap-server "$DST_BOOTSTRAP" --describe --command-config "$TEST_DIR"/kafka.properties
 
-echo "Killing producers and consumers to create some lag"
+# Kill producers and consumers to create some lag
 pkill -SIGKILL -ef "ConsoleProducer" ||true
 pkill -SIGKILL -ef "ConsoleConsumer" ||true
 wait-for-lag-zero "$DST_BOOTSTRAP" ".*" "$TEST_DIR"/kafka.properties
 wait-for-sync "$DST_BOOTSTRAP" "$TEST_DIR"/kafka.properties
 
-echo "Comparing topic configs"
+# Compare topic configs
 for topic in my-topic-a my-topic-b new-topic-a; do
   echo "**** $topic ****"
   echo "---- source ----"
@@ -575,7 +555,7 @@ for topic in my-topic-a my-topic-b new-topic-a; do
     --describe --command-config "$TEST_DIR"/kafka.properties
 done
 
-echo "Comparing consumer group offsets"
+# Compare consumer group offsets
 # Rows ordering may be different because older versions lacks the topic+partition sorting
 echo "---- source ----"
 "$SRC_HOME"/bin/kafka-consumer-groups.sh --bootstrap-server "$SRC_BOOTSTRAP" --group my-group \
@@ -584,19 +564,19 @@ echo "---- destination ----"
 bin/kafka-consumer-groups.sh --bootstrap-server "$DST_BOOTSTRAP" --group my-group \
   --describe --command-config "$TEST_DIR"/kafka.properties
 
-echo "Comparing ACLs"
+# Compare ACLs
 echo "---- source ----"
 "$SRC_HOME"/bin/kafka-acls.sh --bootstrap-server "$SRC_BOOTSTRAP" --list --command-config "$TEST_DIR"/kafka.properties
 echo "---- destination ----"
 bin/kafka-acls.sh --bootstrap-server "$DST_BOOTSTRAP" --list --command-config "$TEST_DIR"/kafka.properties
 
-echo "Verifying data integrity on my-topic-b partition 1"
+# Verify data integrity on my-topic-b partition 1
 echo "---- source ----"
 "$SRC_HOME"/bin/kafka-dump-log.sh --files "$TEST_DIR"/server1/data/my-topic-b-1/*.log --print-data-log 2>/dev/null | tail -5
 echo "---- destination ----"
 bin/kafka-dump-log.sh --files "$TEST_DIR"/server4/data/my-topic-b-1/*.log --print-data-log 2>/dev/null | tail -5
 
-echo "Migration completed, stopping all mirrors"
+# Migration completed, stop all mirrors
 bin/kafka-cluster-mirrors.sh --bootstrap-server "$DST_BOOTSTRAP" --stop --topics "my-topic-.*" \
   --mirror my-mirror --command-config "$TEST_DIR"/kafka.properties
 bin/kafka-cluster-mirrors.sh --bootstrap-server "$DST_BOOTSTRAP" --stop --topics new-topic-a \
@@ -605,7 +585,7 @@ wait-for-state "$DST_BOOTSTRAP" "STOPPED" ".*" "$TEST_DIR"/kafka.properties
 wait-for-sync "$DST_BOOTSTRAP" "$TEST_DIR"/kafka.properties
 bin/kafka-cluster-mirrors.sh --bootstrap-server "$DST_BOOTSTRAP" --describe --command-config "$TEST_DIR"/kafka.properties
 
-echo "Drain all remaining records from destination with my-group"
+# Drain all remaining records from destination with my-group
 # each partition has one extra pid reset control record that inflates the lag by 1
 timeout -s INT 30 bin/kafka-console-consumer.sh --bootstrap-server "$DST_BOOTSTRAP" --group my-group --include ".*" \
   --consumer-property group.protocol=consumer --consumer.config "$TEST_DIR"/client.properties | tail -n1
