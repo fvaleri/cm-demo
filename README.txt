@@ -63,7 +63,7 @@ SRC_BOOTSTRAP="localhost:${server1[cli]},localhost:${server2[cli]}"
 SRC_VERSION="3.9.2"
 SRC_HOME="/tmp/kafka-$SRC_VERSION"
 DST_BOOTSTRAP="localhost:${server4[cli]},localhost:${server5[cli]}"
-DASH_DIR="$HOME/Documents/setup/scripts/cm-demo/dash"
+DASH_HOME="$HOME/Documents/cm-demo/dash"
 
 build-con-boot() {
   local start="$1" end="$2"
@@ -484,7 +484,7 @@ test-setup() {
   sleep 2
 
   echo "Starting dashboard on http://127.0.0.1:8099"
-  "$DASH_DIR"/update.py --kafka-home "$(pwd)" --bootstrap-server "$DST_BOOTSTRAP" \
+  "$DASH_HOME"/update.py --kafka-home "$(pwd)" --bootstrap-server "$DST_BOOTSTRAP" \
     --command-config "$TEST_DIR"/kafka.properties &
 
   echo "Creating topics with custom configs on source"
