@@ -2,7 +2,7 @@
                        CLUSTER MIRRORING TEST INFRASTRUCTURE
                        =====================================
 
-    SOURCE CLUSTER (Kafka 3.9.2, ZK mode)        DESTINATION CLUSTER (local, KRaft mode)
+    SOURCE CLUSTER (Kafka 3.9.2, ZK mode)        DESTINATION CLUSTER (latest, KRaft mode)
     Downloaded binary, AclAuthorizer             StandardAuthorizer
     SSL: JKS keystore/truststore                 SSL: PEM via DirectoryConfigProvider
     +--------------------------------------+     +--------------------------------------+
@@ -507,6 +507,7 @@ test-setup() {
   done
 }
 
+# Cluster migration demo
 test-setup
 
 # List topics
