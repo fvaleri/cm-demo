@@ -38,7 +38,7 @@
                        |                                                |
           +------------+------------+                  +----------------+---+
           |                         |                  |                    |
-     +----v----+             +------v------+      +----v----+       +------v------+
+     +----v----+             +------v------+      +----v----+       +-------v-----+
      | client  | SASL_SSL    |   kafka     |      | client  |       |   kafka     |
      | (User:  | PLAIN       |   (User:    |      | (User:  |       |   (User:    |
      | client) | JKS trust   |   kafka)    |      | client) |       |   kafka)    |
@@ -116,14 +116,14 @@ wait-for-state() {
   return 1
 }
 
-wait-for-sync() {
+wait-for-meta-refresh() {
   local bootstrap="$1" cmd_config="${2-}"
   local cmd_opts=""
   [[ -n "$cmd_config" ]] && cmd_opts="--command-config $cmd_config"
   local interval_ms
   interval_ms=$(bin/kafka-configs.sh --bootstrap-server "$bootstrap" --entity-type brokers --all --describe $cmd_opts 2>/dev/null \
     | grep -oP 'mirror.metadata.refresh.interval.ms=\K[0-9]+' | head -1 || echo 30000)
-  local interval_s=$(( (interval_ms / 1000) + 2 ))
+  local interval_s=$(( interval_ms / 1000 ))
   echo "Waiting ${interval_s}s for metadata sync"
   sleep "$interval_s"
 }
@@ -351,8 +351,8 @@ start-broker() {
   echo "log.dirs=$TEST_DIR/server${ref[id]}/data" >> "$TEST_DIR"/server"${ref[id]}"/config/server.properties
   echo "controller.quorum.bootstrap.servers=$boot" >> "$TEST_DIR"/server"${ref[id]}"/config/server.properties
   echo "auto.create.topics.enable=false" >> "$TEST_DIR"/server"${ref[id]}"/config/server.properties
-  echo "mirror.metadata.refresh.interval.ms=10000" >> "$TEST_DIR"/server"${ref[id]}"/config/server.properties
   echo "mirror.num.replica.fetchers=2" >> "$TEST_DIR"/server"${ref[id]}"/config/server.properties
+  echo "mirror.metadata.refresh.interval.ms=5000" >> "$TEST_DIR"/server"${ref[id]}"/config/server.properties
 
   # listeners
   echo "listeners=REPLICATION://localhost:${ref[rep]},BROKER://localhost:${ref[cli]}" >> "$TEST_DIR"/server"${ref[id]}"/config/server.properties
@@ -543,7 +543,13 @@ bin/kafka-cluster-mirrors.sh --bootstrap-server "$DST_BOOTSTRAP" --describe --co
 pkill -SIGKILL -ef "ConsoleProducer" ||true
 pkill -SIGKILL -ef "ConsoleConsumer" ||true
 wait-for-lag-zero "$DST_BOOTSTRAP" ".*" "$TEST_DIR"/kafka.properties
-wait-for-sync "$DST_BOOTSTRAP" "$TEST_DIR"/kafka.properties
+wait-for-meta-refresh "$DST_BOOTSTRAP" "$TEST_DIR"/kafka.properties
+
+# Verify data integrity on my-topic-b partition 1
+echo "---- source ----"
+"$SRC_HOME"/bin/kafka-dump-log.sh --files "$TEST_DIR"/server1/data/my-topic-b-1/*.log --print-data-log 2>/dev/null | tail -5
+echo "---- destination ----"
+bin/kafka-dump-log.sh --files "$TEST_DIR"/server4/data/my-topic-b-1/*.log --print-data-log 2>/dev/null | tail -5
 
 # Compare topic configs
 for topic in my-topic-a my-topic-b new-topic-a; do
@@ -556,8 +562,14 @@ for topic in my-topic-a my-topic-b new-topic-a; do
     --describe --command-config "$TEST_DIR"/kafka.properties
 done
 
+# Compare ACLs
+echo "---- source ----"
+"$SRC_HOME"/bin/kafka-acls.sh --bootstrap-server "$SRC_BOOTSTRAP" --list --command-config "$TEST_DIR"/kafka.properties
+echo "---- destination ----"
+bin/kafka-acls.sh --bootstrap-server "$DST_BOOTSTRAP" --list --command-config "$TEST_DIR"/kafka.properties
+
 # Compare consumer group offsets
-# Rows ordering may be different because older versions lacks the topic+partition sorting
+# Order may be different because older Kafka versions lacks the topic+partition sorting
 echo "---- source ----"
 "$SRC_HOME"/bin/kafka-consumer-groups.sh --bootstrap-server "$SRC_BOOTSTRAP" --group my-group \
   --describe --command-config "$TEST_DIR"/kafka.properties
@@ -565,30 +577,23 @@ echo "---- destination ----"
 bin/kafka-consumer-groups.sh --bootstrap-server "$DST_BOOTSTRAP" --group my-group \
   --describe --command-config "$TEST_DIR"/kafka.properties
 
-# Compare ACLs
-echo "---- source ----"
-"$SRC_HOME"/bin/kafka-acls.sh --bootstrap-server "$SRC_BOOTSTRAP" --list --command-config "$TEST_DIR"/kafka.properties
-echo "---- destination ----"
-bin/kafka-acls.sh --bootstrap-server "$DST_BOOTSTRAP" --list --command-config "$TEST_DIR"/kafka.properties
-
-# Verify data integrity on my-topic-b partition 1
-echo "---- source ----"
-"$SRC_HOME"/bin/kafka-dump-log.sh --files "$TEST_DIR"/server1/data/my-topic-b-1/*.log --print-data-log 2>/dev/null | tail -5
-echo "---- destination ----"
-bin/kafka-dump-log.sh --files "$TEST_DIR"/server4/data/my-topic-b-1/*.log --print-data-log 2>/dev/null | tail -5
-
-# Migration completed, stop all mirrors
+# Migration completed, stop all mirrors (failover)
+# This will produce a pid-reset control record for each mirror partition
 bin/kafka-cluster-mirrors.sh --bootstrap-server "$DST_BOOTSTRAP" --stop --topics "my-topic-.*" \
   --mirror my-mirror --command-config "$TEST_DIR"/kafka.properties
 bin/kafka-cluster-mirrors.sh --bootstrap-server "$DST_BOOTSTRAP" --stop --topics new-topic-a \
   --mirror new-mirror --command-config "$TEST_DIR"/kafka.properties
 wait-for-state "$DST_BOOTSTRAP" "STOPPED" ".*" "$TEST_DIR"/kafka.properties
-wait-for-sync "$DST_BOOTSTRAP" "$TEST_DIR"/kafka.properties
+wait-for-meta-refresh "$DST_BOOTSTRAP" "$TEST_DIR"/kafka.properties
 bin/kafka-cluster-mirrors.sh --bootstrap-server "$DST_BOOTSTRAP" --describe --command-config "$TEST_DIR"/kafka.properties
 
-# Drain all remaining records from destination with my-group
-timeout -s INT 30 bin/kafka-console-consumer.sh --bootstrap-server "$DST_BOOTSTRAP" --group my-group --include ".*" \
-  --consumer-property group.protocol=consumer --consumer.config "$TEST_DIR"/client.properties | tail -n1
+# Drain all remaining messages from destination
+# The total number of consumed messages is the sum of lag values minus 10 pid-reset control records
+bin/kafka-console-consumer.sh --bootstrap-server "$DST_BOOTSTRAP" \
+  --group my-group --include ".*" --timeout-ms 10000 \
+  --consumer-property group.protocol=consumer \
+  --consumer-property auto.commit.interval.ms=10 \
+  --consumer.config "$TEST_DIR"/client.properties 2>&1 >/dev/null | grep "Processed"
 bin/kafka-consumer-groups.sh --bootstrap-server "$DST_BOOTSTRAP" --group my-group \
   --describe --command-config "$TEST_DIR"/kafka.properties
 
