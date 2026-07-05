@@ -86,7 +86,7 @@ start-node() {
 stop-node() {
   declare -n ref="server$1"
   echo "Stopping node ${ref[id]}"
-  local pid=$(pgrep -f "server${ref[id]}" || true)
+  local pid=$(pgrep -f "server${ref[id]}/config" || true)
   if [[ -n "$pid" ]]; then
     kill -SIGTERM $pid &>/dev/null
     for ((i=0; i<30; i++)); do kill -0 $pid 2>/dev/null || break; sleep 1; done
