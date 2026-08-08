@@ -1,55 +1,12 @@
 #
-#                       CLUSTER MIRRORING TEST INFRASTRUCTURE
-#                       =====================================
+# KAFKA CLUSTER MIGRATION DEMO WITH CLUSTER MIRRORING (KIP-1279)
 #
-#    SOURCE CLUSTER (Kafka 3.9.2, ZK mode)        DESTINATION CLUSTER (latest, KRaft mode)
-#    Downloaded binary, AclAuthorizer             StandardAuthorizer
-#    SSL: JKS keystore/truststore                 SSL: PEM via DirectoryConfigProvider
-#    +--------------------------------------+     +--------------------------------------+
-#    |                                      |     |                                      |
-#    |  +------------+                      |     |  +------------+                      |
-#    |  | ZooKeeper  |  PLAINTEXT           |     |  | Controller |  SASL_SSL (PLAIN)    |
-#    |  | server0    |  :2181               |     |  | server3    |  :6003               |
-#    |  +------+-----+                      |     |  +------+-----+                      |
-#    |         |                            |     |         |                            |
-#    |   +-----+------+                     |     |   +-----+------+                     |
-#    |   |            |                     |     |   |            |                     |
-#    |  +v--------+  +v--------+            |     |  +v--------+  +v--------+            |
-#    |  | Broker  |  | Broker  |            |     |  | Broker  |  | Broker  |            |
-#    |  | server1 |  | server2 |            |     |  | server4 |  | server5 |            |
-#    |  | :9091   |  | :9092   |            |     |  | :9094   |  | :9095   |            |
-#    |  +---------+  +---------+            |     |  +---------+  +---------+            |
-#    |   REPLICATION: SASL_SSL (PLAIN)      |     |   REPLICATION: SASL_SSL (PLAIN)      |
-#    |   BROKER:     SASL_SSL (PLAIN)       |     |   BROKER:     SASL_SSL (PLAIN)       |
-#    |                                      |     |                                      |
-#    +------------------+-------------------+     +---+------------------+--------------+
-#                       |                             |                  |
-#                       |   MIRROR CONNECTIONS        |                  |
-#                       |<----------------------------+                  |
-#                       |  mirror.properties                             |
-#                       |  SASL_SSL (PLAIN), JKS truststore              |
-#                       |  User: kafka (super)                           |
-#                       |                                                |
-#                       |  my-mirror:                                    |
-#                       |    my-topic-a (3 partitions)                   |
-#                       |    my-topic-b (5 partitions)                   |
-#                       |  new-mirror:                                   |
-#                       |    new-topic-a (2 partitions)                  |
-#                       |                                                |
-#          +------------+------------+                  +----------------+---+
-#          |                         |                  |                    |
-#     +----v----+             +------v------+      +----v----+       +-------v-----+
-#     | client  | SASL_SSL    |   kafka     |      | client  |       |   kafka     |
-#     | (User:  | PLAIN       |   (User:    |      | (User:  |       |   (User:    |
-#     | client) | JKS trust   |   kafka)    |      | client) |       |   kafka)    |
-#     +---------+             +-------------+      +---------+       +-------------+
-#     produce/consume          admin commands       (via ACL sync)    admin commands
-#     with ACLs                topic, mirror,                         verify configs,
-#                              ACLs, configs                          offsets, ACLs
-#
-#    SHARED CERTIFICATE: self-signed PEM (localhost)
-#    Converted to JKS for source cluster compatibility
-#    Same cert used by all nodes and clients
+# The following demo walks through a cluster migration from cluster A (Kafka 3.9.2,
+# ZooKeeper mode, JKS keystores for SSL, legacy AclAuthorizer) to clustr B (latest
+# Kafka build running in KRaft mode, PEM certificates via DirectoryConfigProvider,
+# StandardAuthorizer). Both clusters use SASL_SSL with PLAIN authentication and
+# share a self-signed TLS certificate. There is also a simple local dashboard
+# for monitoring the mirroring state.
 #
 
 TEST_DIR="$(pwd)/results/fvaleri"; mkdir -p "$TEST_DIR"
@@ -102,7 +59,7 @@ restart-node() {
   sleep 5
 }
 
-wait-for-meta-refresh() {
+wait-for-meta-sync() {
   local bootstrap="$1" cmd_config="${2-}"
   local cmd_opts=""
   [[ -n "$cmd_config" ]] && cmd_opts="--command-config $cmd_config"
@@ -455,15 +412,15 @@ test-setup() {
   echo "ssl.truststore.location=$TEST_DIR/truststore.jks" >> "$TEST_DIR"/client.properties
   echo "ssl.truststore.password=$PASSWD" >> "$TEST_DIR"/client.properties
 
-  echo "bootstrap.servers=$SRC_BOOTSTRAP" > "$TEST_DIR"/mirror.properties
-  echo "sasl.mechanism=PLAIN" >> "$TEST_DIR"/mirror.properties
-  echo "security.protocol=SASL_SSL" >> "$TEST_DIR"/mirror.properties
-  echo 'sasl.jaas.config=org.apache.kafka.common.security.plain.PlainLoginModule required \' >> "$TEST_DIR"/mirror.properties
-  echo '  username="kafka" \' >> "$TEST_DIR"/mirror.properties
-  echo '  password="changeit";' >> "$TEST_DIR"/mirror.properties
-  echo "ssl.truststore.type=JKS" >> "$TEST_DIR"/mirror.properties
-  echo "ssl.truststore.location=$TEST_DIR/truststore.jks" >> "$TEST_DIR"/mirror.properties
-  echo "ssl.truststore.password=$PASSWD" >> "$TEST_DIR"/mirror.properties
+  echo "bootstrap.servers=$SRC_BOOTSTRAP" > "$TEST_DIR"/a-to-b.properties
+  echo "sasl.mechanism=PLAIN" >> "$TEST_DIR"/a-to-b.properties
+  echo "security.protocol=SASL_SSL" >> "$TEST_DIR"/a-to-b.properties
+  echo 'sasl.jaas.config=org.apache.kafka.common.security.plain.PlainLoginModule required \' >> "$TEST_DIR"/a-to-b.properties
+  echo '  username="kafka" \' >> "$TEST_DIR"/a-to-b.properties
+  echo '  password="changeit";' >> "$TEST_DIR"/a-to-b.properties
+  echo "ssl.truststore.type=JKS" >> "$TEST_DIR"/a-to-b.properties
+  echo "ssl.truststore.location=$TEST_DIR/truststore.jks" >> "$TEST_DIR"/a-to-b.properties
+  echo "ssl.truststore.password=$PASSWD" >> "$TEST_DIR"/a-to-b.properties
 
   echo "Starting Kafka $SRC_VERSION (ZK) as source cluster"
   cd "$SRC_HOME"
@@ -488,6 +445,7 @@ test-setup() {
   echo "Starting dashboard on http://127.0.0.1:8099"
   "$DASH_HOME"/update.py --kafka-home "$(pwd)" --bootstrap-server "$DST_BOOTSTRAP" \
     --command-config "$TEST_DIR"/kafka.properties > /tmp/update.log 2>&1 &
+  disown
 
   echo "Creating topics with custom configs on source"
   "$SRC_HOME"/bin/kafka-topics.sh --bootstrap-server "$SRC_BOOTSTRAP" --create --topic my-topic-a \
@@ -511,88 +469,106 @@ test-setup() {
   sleep 2
 }
 
-# Cluster migration demo
 test-setup
 
-# List topics
+# STEP 1: List topics on both clusters
+# Destination should be empty
 echo "---- source ----"
 "$SRC_HOME"/bin/kafka-topics.sh --bootstrap-server "$SRC_BOOTSTRAP" --list --command-config "$TEST_DIR"/kafka.properties
 echo "---- destination ----"
 bin/kafka-topics.sh --bootstrap-server "$DST_BOOTSTRAP" --list --command-config "$TEST_DIR"/kafka.properties
 
-# Start 3 producers and a group with 2 consumers on source
+# STEP 2: Start 3 producers sending messages to all partitions
+# and 2 consumers in my-group on source
+# Messages flow continuously in the background
 for topic in my-topic-a my-topic-b new-topic-a; do
-  (i=0; while true; do echo "$((i++)):msg$i"; sleep 0.001; done) \
+  (i=0; while true; do echo "$((i++)):msg$i"; done) \
     | "$SRC_HOME"/bin/kafka-console-producer.sh --bootstrap-server "$SRC_BOOTSTRAP" --topic "$topic" \
     --property parse.key=true --property key.separator=: --producer.config "$TEST_DIR"/client.properties &
+  disown
 done
 "$SRC_HOME"/bin/kafka-console-consumer.sh --bootstrap-server "$SRC_BOOTSTRAP" --include "my-topic-.*" \
   --group my-group --from-beginning --consumer.config "$TEST_DIR"/client.properties >/dev/null &
-"$SRC_HOME"/bin/kafka-console-consumer.sh --bootstrap-server "$SRC_BOOTSTRAP" --include "new-topic-.*" \
+disown
+"$SRC_HOME"/bin/kafka-console-consumer.sh --bootstrap-server "$SRC_BOOTSTRAP" --include "new-topic-a" \
   --group my-group --from-beginning --consumer.config "$TEST_DIR"/client.properties >/dev/null &
+disown
 
-# Create 2 mirrors
-bin/kafka-cluster-mirrors.sh --bootstrap-server "$DST_BOOTSTRAP" --create --mirror my-mirror \
-  --mirror-config "$TEST_DIR"/mirror.properties --command-config "$TEST_DIR"/kafka.properties
-bin/kafka-cluster-mirrors.sh --bootstrap-server "$DST_BOOTSTRAP" --start --topics "my-topic-.*" \
-  --mirror my-mirror --command-config "$TEST_DIR"/kafka.properties
-bin/kafka-cluster-mirrors.sh --bootstrap-server "$DST_BOOTSTRAP" --create --mirror new-mirror \
-  --mirror-config "$TEST_DIR"/mirror.properties --command-config "$TEST_DIR"/kafka.properties
+# STEP 3: Create mirror 'a-to-b' and start mirroring topics matching 'my-topic.*'
+# Expected: mirror link created and topics begin replicating
+bin/kafka-cluster-mirrors.sh --bootstrap-server "$DST_BOOTSTRAP" --create --mirror a-to-b \
+  --mirror-config "$TEST_DIR"/a-to-b.properties --command-config "$TEST_DIR"/kafka.properties
+bin/kafka-cluster-mirrors.sh --bootstrap-server "$DST_BOOTSTRAP" --start --topics "my-topic.*" \
+  --mirror a-to-b --command-config "$TEST_DIR"/kafka.properties
+
+# STEP 4: Create mirror 'new-a-to-b' and start mirroring 'new-topic-a'
+# Expected: second mirror link created and topic begins replicating
+bin/kafka-cluster-mirrors.sh --bootstrap-server "$DST_BOOTSTRAP" --create --mirror new-a-to-b \
+  --mirror-config "$TEST_DIR"/a-to-b.properties --command-config "$TEST_DIR"/kafka.properties
 bin/kafka-cluster-mirrors.sh --bootstrap-server "$DST_BOOTSTRAP" --start --topics new-topic-a \
-  --mirror new-mirror --command-config "$TEST_DIR"/kafka.properties
-wait-for-state "$DST_BOOTSTRAP" "MIRRORING" ".*" "$TEST_DIR"/kafka.properties
-bin/kafka-cluster-mirrors.sh --bootstrap-server "$DST_BOOTSTRAP" --describe --command-config "$TEST_DIR"/kafka.properties
+  --mirror new-a-to-b --command-config "$TEST_DIR"/kafka.properties
 
-# Kill producers and consumers (this will create some consumer lag)
+# STEP 5: Wait for all mirrors to reach MIRRORING state, then show their status
+# Expected: all topic mirrors in MIRRORING state with active lag
+wait-for-state "$DST_BOOTSTRAP" "MIRRORING" ".*" ".*" "$TEST_DIR"/kafka.properties
+bin/kafka-cluster-mirrors.sh --bootstrap-server "$DST_BOOTSTRAP" --describe \
+  --command-config "$TEST_DIR"/kafka.properties
+
+# STEP 6: Stop all producers and consumers, then wait for replication lag
+# to reach zero and metadata to sync
+# Expected: all data fully replicated
 pkill -SIGKILL -ef "ConsoleProducer" ||true
 pkill -SIGKILL -ef "ConsoleConsumer" ||true
-wait-for-lag-zero "$DST_BOOTSTRAP" ".*" "$TEST_DIR"/kafka.properties
-wait-for-meta-refresh "$DST_BOOTSTRAP" "$TEST_DIR"/kafka.properties
+wait-for-lag-zero "$DST_BOOTSTRAP" ".*" ".*" "$TEST_DIR"/kafka.properties
+wait-for-meta-sync "$DST_BOOTSTRAP" "$TEST_DIR"/kafka.properties
 
-# Verify data integrity on my-topic-b partition 1
+# STEP 7: Verify data integrity by comparing log dumps on my-topic-b partition 2
+# Expected: last 5 records should be identical on both clusters
 echo "---- source ----"
-"$SRC_HOME"/bin/kafka-dump-log.sh --files "$TEST_DIR"/server1/data/my-topic-b-1/*.log --print-data-log 2>/dev/null | tail -5
+"$SRC_HOME"/bin/kafka-dump-log.sh --files "$TEST_DIR"/server1/data/my-topic-b-2/*.log --print-data-log 2>/dev/null | tail -5
 echo "---- destination ----"
-bin/kafka-dump-log.sh --files "$TEST_DIR"/server4/data/my-topic-b-1/*.log --print-data-log 2>/dev/null | tail -5
+bin/kafka-dump-log.sh --files "$TEST_DIR"/server4/data/my-topic-b-2/*.log --print-data-log 2>/dev/null | tail -5
 
-# Compare topic configs
-for topic in my-topic-a my-topic-b new-topic-a; do
-  echo "**** $topic ****"
-  echo "---- source ----"
-  "$SRC_HOME"/bin/kafka-configs.sh --bootstrap-server "$SRC_BOOTSTRAP" --entity-type topics --entity-name "$topic" \
-    --describe --command-config "$TEST_DIR"/kafka.properties
-  echo "---- destination ----"
-  bin/kafka-configs.sh --bootstrap-server "$DST_BOOTSTRAP" --entity-type topics --entity-name "$topic" \
-    --describe --command-config "$TEST_DIR"/kafka.properties
-done
+# STEP 8: Compare topic configuration on new-topic-a
+# Expected: custom configs (retention.ms, max.message.bytes) should match on both clusters
+echo "---- source ----"
+"$SRC_HOME"/bin/kafka-configs.sh --bootstrap-server "$SRC_BOOTSTRAP" --entity-type topics --entity-name new-topic-a \
+  --describe --command-config "$TEST_DIR"/kafka.properties
+echo "---- destination ----"
+bin/kafka-configs.sh --bootstrap-server "$DST_BOOTSTRAP" --entity-type topics --entity-name new-topic-a \
+  --describe --command-config "$TEST_DIR"/kafka.properties
 
-# Compare ACLs
+# STEP 9: Compare ACLs between clusters
+# Expected: client producer and consumer permissions should be replicated from source to destination
 echo "---- source ----"
 "$SRC_HOME"/bin/kafka-acls.sh --bootstrap-server "$SRC_BOOTSTRAP" --list --command-config "$TEST_DIR"/kafka.properties
 echo "---- destination ----"
 bin/kafka-acls.sh --bootstrap-server "$DST_BOOTSTRAP" --list --command-config "$TEST_DIR"/kafka.properties
 
-# Compare consumer group offsets
-# Order may be different because older Kafka versions lacks the topic+partition sorting
+# STEP 10: Compare consumer group offsets for my-group
+# Expected: offsets translated to destination
+# Order may differ because older Kafka lacks topic+partition sorting
 echo "---- source ----"
 "$SRC_HOME"/bin/kafka-consumer-groups.sh --bootstrap-server "$SRC_BOOTSTRAP" --group my-group \
   --describe --command-config "$TEST_DIR"/kafka.properties
-echo "---- destination ----"
+echo -e "\n---- destination ----"
 bin/kafka-consumer-groups.sh --bootstrap-server "$DST_BOOTSTRAP" --group my-group \
   --describe --command-config "$TEST_DIR"/kafka.properties
 
-# Migration completed, stop all mirrors (failover)
-# This will produce a pid-reset control record for each mirror partition
-bin/kafka-cluster-mirrors.sh --bootstrap-server "$DST_BOOTSTRAP" --stop --topics "my-topic-.*" \
-  --mirror my-mirror --command-config "$TEST_DIR"/kafka.properties
-bin/kafka-cluster-mirrors.sh --bootstrap-server "$DST_BOOTSTRAP" --stop --topics new-topic-a \
-  --mirror new-mirror --command-config "$TEST_DIR"/kafka.properties
-wait-for-state "$DST_BOOTSTRAP" "STOPPED" ".*" "$TEST_DIR"/kafka.properties
-wait-for-meta-refresh "$DST_BOOTSTRAP" "$TEST_DIR"/kafka.properties
-bin/kafka-cluster-mirrors.sh --bootstrap-server "$DST_BOOTSTRAP" --describe --command-config "$TEST_DIR"/kafka.properties
+# STEP 11: Migration complete, stop all mirrors to perform failover
+# This produces a pid-reset control record for each mirrored partition
+bin/kafka-cluster-mirrors.sh --bootstrap-server "$DST_BOOTSTRAP" --stop \
+  --mirror a-to-b --topics ".*" --command-config "$TEST_DIR"/kafka.properties
+bin/kafka-cluster-mirrors.sh --bootstrap-server "$DST_BOOTSTRAP" --stop \
+  --mirror new-a-to-b --topics ".*" --command-config "$TEST_DIR"/kafka.properties
+wait-for-state "$DST_BOOTSTRAP" "STOPPED" ".*" ".*" "$TEST_DIR"/kafka.properties
+wait-for-meta-sync "$DST_BOOTSTRAP" "$TEST_DIR"/kafka.properties
+bin/kafka-cluster-mirrors.sh --bootstrap-server "$DST_BOOTSTRAP" --describe \
+  --command-config "$TEST_DIR"/kafka.properties
 
-# Drain all remaining messages from destination
-# The total number of consumed messages is the sum of lag values minus 10 pid-reset control records
+# STEP 12: Drain all remaining messages from destination using my-group
+# Expected: total consumed equals the sum of lag values minus 10 pid-reset control records
+# Final state should show zero lag
 bin/kafka-console-consumer.sh --bootstrap-server "$DST_BOOTSTRAP" \
   --group my-group --include ".*" --timeout-ms 10000 \
   --consumer-property group.protocol=consumer \
@@ -601,4 +577,5 @@ bin/kafka-console-consumer.sh --bootstrap-server "$DST_BOOTSTRAP" \
 bin/kafka-consumer-groups.sh --bootstrap-server "$DST_BOOTSTRAP" --group my-group \
   --describe --command-config "$TEST_DIR"/kafka.properties
 
+# STEP 13: Cleanup all running processes
 test-teardown
