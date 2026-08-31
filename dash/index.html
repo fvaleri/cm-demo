@@ -1,0 +1,450 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Kafka Cluster Mirrors</title>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+    font-family: "Courier New", monospace;
+    background: #f2f2f2;
+    color: #444444;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+}
+
+header {
+    padding: 16px 24px;
+    border-bottom: 1px solid #e0e0e0;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+
+header h1 {
+    font-size: 16px;
+    font-weight: normal;
+    color: #268bd2;
+}
+
+#canvas-area {
+    flex: 1;
+    position: relative;
+    overflow: auto;
+    padding: 32px;
+}
+
+.topology {
+    display: flex;
+    align-items: stretch;
+    justify-content: center;
+    gap: 0;
+    min-height: 300px;
+    position: relative;
+
+}
+
+#message {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 300px;
+    color: #999999;
+    font-size: 14px;
+    text-align: center;
+}
+
+#message.error {
+    color: #dc322f;
+}
+
+.cluster-col {
+    display: flex;
+    flex-direction: column;
+    gap: 112px;
+    justify-content: center;
+    z-index: 2;
+}
+
+.cluster-col.sources { align-items: flex-end; }
+.cluster-col.destination { align-items: flex-start; }
+
+.arrows-col {
+    flex: 1;
+    max-width: 500px;
+    min-width: 200px;
+    position: relative;
+    z-index: 1;
+}
+
+.arrows-col svg {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    overflow: visible;
+}
+
+.cluster-box {
+    background: #f8f8f8;
+    border: 1px solid #555555;
+    border-radius: 6px;
+    padding: 16px 20px;
+    min-width: 180px;
+}
+
+.cluster-box.destination-box {
+    border-color: #555555;
+}
+
+.cluster-box h2 {
+    font-size: 13px;
+    font-weight: normal;
+    color: #555555;
+    margin-bottom: 8px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+}
+
+.cluster-box .mirror-name {
+    font-size: 15px;
+    color: #222222;
+    margin-bottom: 4px;
+    word-break: break-all;
+}
+
+.cluster-box .cluster-label {
+    font-size: 15px;
+    color: #222222;
+}
+
+.cluster-box .detail {
+    font-size: 12px;
+    color: #999999;
+    margin-top: 2px;
+}
+
+.arrow-label {
+    position: absolute;
+    background: #f8f8f8;
+    border: 1px solid #268bd2;
+    border-radius: 4px;
+    padding: 6px 10px;
+    font-size: 12px;
+    transform: translate(-50%, -50%);
+    z-index: 3;
+    white-space: nowrap;
+    text-align: center;
+    pointer-events: none;
+}
+
+.arrow-label .partitions { color: #268bd2; }
+.arrow-label { color: #268bd2; }
+.arrow-label .lag { color: #268bd2; }
+.arrow-label .lag.high { color: #dc322f; }
+.arrow-label .lag.medium { color: #b58900; }
+
+.arrow-label .topics-list {
+    margin-top: 4px;
+    font-size: 11px;
+    color: #999999;
+    max-width: 260px;
+    white-space: normal;
+    text-align: left;
+}
+
+.arrow-label .topic-row {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.arrow-label .topic-row .t-name {
+    color: #555555;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.arrow-label .topic-row .t-stats {
+    color: #999999;
+    flex-shrink: 0;
+}
+
+.state-dot {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    margin-right: 4px;
+    vertical-align: middle;
+}
+
+.state-dot.mirroring { background: #859900; }
+.state-dot.paused { background: #fad97a; }
+.state-dot.stopped { background: #bbbbbb; }
+.state-dot.mixed { background: #cb4b16; }
+.state-dot.error { background: #dc322f; }
+</style>
+</head>
+<body>
+
+<header>
+    <h1>Kafka Cluster Mirrors</h1>
+    <span id="timestamp" style="font-size:12px;color:#999999;"></span>
+</header>
+
+<div id="canvas-area">
+    <div id="message">No mirror data.</div>
+    <div id="topology" class="topology" style="display:none;"></div>
+</div>
+
+<script>
+// Fetches /tmp/data.json (written by update.py), groups partitions by mirror,
+// and renders a source -> destination topology with SVG arrows.
+// Arrow colors: blue (mirroring), dark grey (stopped), red (any FAILED partition).
+// Animated dots flow along arrows only while actively mirroring.
+var REFRESH_MS = 1000;
+var prevJson = "";
+
+function fetchData() {
+    fetch("/tmp/data.json?t=" + Date.now())
+        .then(function(r) {
+            if (r.status === 404) { prevJson = ""; render(null); return; }
+            if (!r.ok) throw new Error("HTTP " + r.status);
+            return r.text();
+        })
+        .then(function(text) {
+            if (text === undefined) return;
+            if (text !== prevJson) {
+                prevJson = text;
+                render(JSON.parse(text));
+            }
+        })
+        .catch(function(err) {
+            prevJson = "";
+            render(null, err.message);
+        });
+}
+
+function groupByMirror(partitions) {
+    var mirrors = {};
+    for (var i = 0; i < partitions.length; i++) {
+        var p = partitions[i];
+        var lag = (p.sourceOffset >= 0 && p.destinationOffset >= 0)
+            ? Math.max(0, p.sourceOffset - p.destinationOffset) : 0;
+        if (!mirrors[p.mirror]) {
+            mirrors[p.mirror] = { name: p.mirror, topics: {}, totalPartitions: 0, totalLag: 0, states: {} };
+        }
+        var m = mirrors[p.mirror];
+        if (!m.topics[p.topic]) {
+            m.topics[p.topic] = { partitions: 0, lag: 0 };
+        }
+        m.topics[p.topic].partitions++;
+        m.topics[p.topic].lag += lag;
+        m.totalPartitions++;
+        m.totalLag += lag;
+        var st = (p.state || "UNKNOWN").toUpperCase();
+        m.states[st] = (m.states[st] || 0) + 1;
+    }
+    return mirrors;
+}
+
+// FAILED takes priority: even one failed partition turns the whole mirror red
+function dominantState(states) {
+    var keys = Object.keys(states);
+    if (keys.length === 0) return "unknown";
+    if (states["FAILED"]) return "error";
+    if (keys.length === 1) return keys[0].toLowerCase();
+    return "mixed";
+}
+
+function stateLabel(states) {
+    var parts = [];
+    var keys = Object.keys(states).sort();
+    for (var i = 0; i < keys.length; i++) {
+        parts.push(keys[i].toLowerCase() + ":" + states[keys[i]]);
+    }
+    return parts.join(" ");
+}
+
+function lagClass(lag) {
+    if (lag > 10000) return "high";
+    if (lag > 1000) return "medium";
+    return "";
+}
+
+function updateTimestamp() {
+    var d = new Date();
+    var dd = String(d.getDate()).padStart(2, "0");
+    var mm = String(d.getMonth() + 1).padStart(2, "0");
+    document.getElementById("timestamp").textContent = dd + "/" + mm + "/" + d.getFullYear();
+}
+
+function showMessage(msg, isError) {
+    var message = document.getElementById("message");
+    var topo = document.getElementById("topology");
+    topo.style.display = "none";
+    message.textContent = msg;
+    message.className = isError ? "error" : "";
+    message.style.display = "flex";
+}
+
+function render(partitions, error) {
+    var message = document.getElementById("message");
+    var topo = document.getElementById("topology");
+    updateTimestamp();
+
+    if (error) {
+        showMessage(error, true);
+        return;
+    }
+
+    if (!partitions) {
+        showMessage("No mirror data.", false);
+        return;
+    }
+
+    if (partitions.length === 0) {
+        showMessage("No mirrors found.", false);
+        return;
+    }
+
+    message.style.display = "none";
+
+    function build() {
+        topo.style.display = "flex";
+        var mirrors = groupByMirror(partitions);
+        var mirrorNames = Object.keys(mirrors).sort();
+
+        var srcHtml = "";
+        for (var i = 0; i < mirrorNames.length; i++) {
+            var m = mirrors[mirrorNames[i]];
+            var ds = dominantState(m.states);
+            var topicCount = Object.keys(m.topics).length;
+            srcHtml += '<div class="cluster-box" data-mirror="' + esc(m.name) + '">'
+                + '<h2><span class="state-dot ' + ds + '"></span>source' + (i + 1) + '</h2>'
+                + '<div class="detail">' + topicCount + ' topic' + (topicCount !== 1 ? 's' : '')
+                + ' | ' + m.totalPartitions + ' partitions</div>'
+                + '</div>';
+        }
+
+        var dstHtml = '<div class="cluster-box destination-box" id="destination-box">'
+            + '<h2><span class="state-dot mirroring"></span>destination</h2>'
+            + '<div class="detail">' + mirrorNames.length + ' mirror' + (mirrorNames.length !== 1 ? 's' : '')
+            + ' | ' + partitions.length + ' partitions</div>'
+            + '</div>';
+
+        topo.innerHTML =
+            '<div class="cluster-col sources" id="sources-col">' + srcHtml + '</div>'
+            + '<div class="arrows-col" id="arrows-col"><svg id="arrows-svg"></svg></div>'
+            + '<div class="cluster-col destination" id="destination-col">' + dstHtml + '</div>';
+
+        requestAnimationFrame(function() { drawArrows(mirrors, mirrorNames); });
+    }
+
+    build();
+}
+
+function drawArrows(mirrors, mirrorNames) {
+    var svg = document.getElementById("arrows-svg");
+    var arrowsCol = document.getElementById("arrows-col");
+    var colRect = arrowsCol.getBoundingClientRect();
+    var dstBox = document.getElementById("destination-box");
+    var dstRect = dstBox.getBoundingClientRect();
+    var dstY = dstRect.top + dstRect.height / 2 - colRect.top;
+
+    // remove old labels
+    var oldLabels = arrowsCol.querySelectorAll(".arrow-label");
+    for (var k = 0; k < oldLabels.length; k++) oldLabels[k].remove();
+
+    var paths = "";
+    var markers = "";
+
+    var sourceBoxes = document.querySelectorAll('.cluster-col.sources .cluster-box');
+
+    for (var i = 0; i < mirrorNames.length; i++) {
+        var m = mirrors[mirrorNames[i]];
+        var srcBox = sourceBoxes[i];
+        if (!srcBox) continue;
+        var srcRect = srcBox.getBoundingClientRect();
+        var srcY = srcRect.top + srcRect.height / 2 - colRect.top;
+
+        var x1 = 0;
+        var x2 = colRect.width;
+        var midX = colRect.width / 2;
+        var midY = (srcY + dstY) / 2;
+
+        var cp1x = midX * 0.6;
+        var cp2x = colRect.width - midX * 0.6;
+
+        var ds = dominantState(m.states);
+        var mirrorColor = ds === "error" ? "#dc322f" : ds === "stopped" ? "#555555" : "#268bd2";
+
+        var markerId = "ah-" + i;
+        markers += '<marker id="' + markerId + '" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">'
+            + '<polygon points="0 0, 8 3, 0 6" fill="' + mirrorColor + '"/></marker>';
+
+        var pathId = "arrow-path-" + i;
+        paths += '<path id="' + pathId + '" d="M ' + x1 + ' ' + srcY
+            + ' C ' + cp1x + ' ' + srcY + ', ' + cp2x + ' ' + dstY + ', ' + x2 + ' ' + dstY + '"'
+            + ' fill="none" stroke="' + mirrorColor + '" stroke-width="1.5" stroke-opacity="0.6" marker-end="url(#' + markerId + ')"/>';
+
+        // flowing dots only when mirroring with lag
+        if (ds !== "error" && ds !== "stopped" && m.states["MIRRORING"] && m.totalLag > 0) {
+            for (var d = 0; d < 6; d++) {
+                // negative begin starts dots at staggered path positions immediately
+                // (positive begin leaves dots at SVG origin until delay expires)
+                var begin = (-d * 0.4).toFixed(1) + "s";
+                paths += '<circle r="3" fill="' + mirrorColor + '" opacity="0.7">'
+                    + '<animateMotion dur="2.5s" begin="' + begin + '" repeatCount="indefinite">'
+                    + '<mpath href="#' + pathId + '"/>'
+                    + '</animateMotion></circle>';
+            }
+        }
+
+        // label
+        var label = document.createElement("div");
+        label.className = "arrow-label";
+        label.style.borderColor = mirrorColor;
+        label.style.color = mirrorColor;
+
+        var lc = lagClass(m.totalLag);
+
+        label.innerHTML =
+            '<div style="margin-bottom:4px">' + esc(m.name) + '</div>'
+            + m.totalPartitions + ' partitions'
+            + ' | lag: ' + fmtNum(m.totalLag);
+
+        label.style.left = midX + "px";
+        label.style.top = midY + "px";
+        arrowsCol.appendChild(label);
+    }
+
+    svg.innerHTML = '<defs>' + markers + '</defs>' + paths;
+}
+
+function fmtNum(n) {
+    if (n >= 1000000) return (n / 1000000).toFixed(1) + "M";
+    if (n >= 1000) return (n / 1000).toFixed(1) + "K";
+    return String(n);
+}
+
+function esc(s) {
+    var d = document.createElement("div");
+    d.appendChild(document.createTextNode(s));
+    return d.innerHTML;
+}
+
+window.addEventListener("resize", function() {
+    if (prevJson) render(JSON.parse(prevJson));
+});
+
+fetchData();
+setInterval(fetchData, REFRESH_MS);
+</script>
+</body>
+</html>
