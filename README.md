@@ -4,7 +4,7 @@
 > This repo uses an unoffical POC-level Kafka 4.2 revision for early access testing.
 > It is not production ready, so do not run it against real workloads.
 
-This Cluster Mirroring ([KIP-1279][1]) demo walks through a cluster migration from cluster A (source) to cluster B (destination).
+Cluster Mirroring ([KIP-1279][1]) demo that walks through a cluster migration from cluster A (source) to cluster B (destination).
 Cluster A runs on a Kafka 3.9.2 binary with ZK mode, JKS keystores and legacy AclAuthorizer. 
 Cluster B runs on an unofficial Kafka 4.2.0 binary with KRaft mode, PEM certificates and StandardAuthorizer.
 Both clusters run on localhost and use SASL_SSL with PLAIN authentication sharing a self-signed TLS certificate.
