@@ -219,8 +219,8 @@ start-controller() {
   mkdir -p "$TEST_DIR"/server"${ref[id]}"/config "$TEST_DIR"/server"${ref[id]}"/logs "$TEST_DIR"/server"${ref[id]}"/data
   cp "$DST_HOME"/config/log4j2.yaml "$TEST_DIR"/server"${ref[id]}"/config/log4j2.yaml
 
-  echo "process.roles=controller" >> "$TEST_DIR"/server"${ref[id]}"/config/server.properties
   echo "node.id=${ref[id]}" >> "$TEST_DIR"/server"${ref[id]}"/config/server.properties
+  echo "process.roles=controller" >> "$TEST_DIR"/server"${ref[id]}"/config/server.properties
   echo "log.dirs=$TEST_DIR/server"${ref[id]}"/data" >> "$TEST_DIR"/server"${ref[id]}"/config/server.properties
   echo "controller.quorum.bootstrap.servers=$boot" >> "$TEST_DIR"/server"${ref[id]}"/config/server.properties
 
@@ -282,8 +282,8 @@ start-broker() {
   mkdir -p "$TEST_DIR"/server"${ref[id]}"/config "$TEST_DIR"/server"${ref[id]}"/logs "$TEST_DIR"/server"${ref[id]}"/data
   cp "$DST_HOME"/config/log4j2.yaml "$TEST_DIR"/server"${ref[id]}"/config/log4j2.yaml
 
-  echo "process.roles=broker" >> "$TEST_DIR"/server"${ref[id]}"/config/server.properties
   echo "node.id=${ref[id]}" >> "$TEST_DIR"/server"${ref[id]}"/config/server.properties
+  echo "process.roles=broker" >> "$TEST_DIR"/server"${ref[id]}"/config/server.properties
   echo "log.dirs=$TEST_DIR/server${ref[id]}/data" >> "$TEST_DIR"/server"${ref[id]}"/config/server.properties
   echo "controller.quorum.bootstrap.servers=$boot" >> "$TEST_DIR"/server"${ref[id]}"/config/server.properties
   echo "auto.create.topics.enable=false" >> "$TEST_DIR"/server"${ref[id]}"/config/server.properties
